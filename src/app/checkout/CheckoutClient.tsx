@@ -5,9 +5,21 @@ import { useRouter } from "next/navigation";
 import { useState, useSyncExternalStore } from "react";
 import { Stepper } from "@/components/CartDrawer";
 import { Img } from "@/components/ui";
+import dynamic from "next/dynamic";
 import { cartActions, useCart } from "@/lib/cart-store";
 import { deliveryFeeFor, formatPKR } from "@/lib/format";
 import { AREAS, SHOP } from "@/lib/shop";
+import { type MapLocation } from "@/components/MapPicker";
+
+const MapPicker = dynamic(
+  () => import("@/components/MapPicker").then((mod) => mod.MapPicker),
+  {
+    ssr: false,
+    loading: () => (
+      <p className="text-ink/40 text-sm text-center mt-10">Loading map…</p>
+    ),
+  }
+);
 
 const PAYMENTS = [
   { key: "cod", label: "Cash on delivery", hint: "Pay the rider when your food arrives" },
@@ -34,6 +46,7 @@ export function CheckoutClient() {
     notes: "",
     paymentMethod: "cod",
   });
+  const [location, setLocation] = useState<MapLocation | null>(null);
   const [errors, setErrors] = useState<Partial<Record<Fields | "items", string>>>({});
   const [formError, setFormError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -45,6 +58,16 @@ export function CheckoutClient() {
   const set = (k: Fields) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
     setForm((f) => ({ ...f, [k]: e.target.value }));
     if (errors[k]) setErrors((er) => ({ ...er, [k]: undefined }));
+  };
+
+  const handleLocationSelect = (loc: MapLocation) => {
+    setLocation(loc);
+    setForm((f) => ({ ...f, address: loc.shortAddress }));
+    // Auto-match the delivery area from the reverse-geocoded address.
+    const matched = AREAS.find((a) => loc.address.toLowerCase().includes(a.toLowerCase()));
+    if (matched) {
+      setForm((f) => ({ ...f, area: matched }));
+    }
   };
 
   async function submit(e: React.FormEvent) {
@@ -150,6 +173,7 @@ export function CheckoutClient() {
 
           <section>
             <h2 className="font-display text-2xl font-semibold">2. Delivery in Rawalpindi</h2>
+            <MapPicker onSelect={handleLocationSelect} value={location} className="mb-6" />
             <div className="mt-5 grid gap-4">
               <Field label="Area" error={errors.area}>
                 <select name="area" value={form.area} onChange={set("area")} className={input("area")}>
@@ -158,6 +182,7 @@ export function CheckoutClient() {
                     <option key={a}>{a}</option>
                   ))}
                 </select>
+                {location && <p className="mt-1 text-xs text-ink/40">Pin: {location.address}</p>}
               </Field>
               <Field label="Full address" error={errors.address}>
                 <textarea name="address" rows={3} autoComplete="street-address" value={form.address} onChange={set("address")} className={input("address")} placeholder="House / street / nearest landmark" />
