@@ -37,6 +37,8 @@ export function MapPicker({ onSelect, value, className }: MapPickerProps) {
     Array<{ lat: number; lng: number; display_name: string }>
   >([]);
   const [loading, setLoading] = useState(false);
+  const [geolocating, setGeolocating] = useState(false);
+  const [geoError, setGeoError] = useState<string | null>(null);
 
   const reverseGeocode = useCallback(
     async (lat: number, lng: number) => {
@@ -70,6 +72,49 @@ export function MapPicker({ onSelect, value, className }: MapPickerProps) {
     },
     [onSelect]
   );
+
+  const setPosition = useCallback(
+    async (lat: number, lng: number, zoom = 15) => {
+      mapRefInst.current?.setView([lat, lng] as [number, number], zoom);
+      markerRef.current?.setLatLng([lat, lng] as [number, number]);
+      await reverseGeocode(lat, lng);
+    },
+    [reverseGeocode]
+  );
+
+  // Use the browser's Geolocation API to centre the map on the user's spot.
+  const handleUseMyLocation = useCallback(() => {
+    if (!navigator.geolocation) {
+      setGeoError("Your browser doesn't support location services.");
+      return;
+    }
+    setGeolocating(true);
+    setGeoError(null);
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const { latitude, longitude } = pos.coords;
+        await setPosition(latitude, longitude);
+        setGeolocating(false);
+      },
+      (err) => {
+        setGeolocating(false);
+        switch (err.code) {
+          case err.PERMISSION_DENIED:
+            setGeoError("Location access was denied.");
+            break;
+          case err.POSITION_UNAVAILABLE:
+            setGeoError("Location information is unavailable.");
+            break;
+          case err.TIMEOUT:
+            setGeoError("Location request timed out.");
+            break;
+          default:
+            setGeoError("Unable to retrieve your location.");
+        }
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+  }, [setPosition]);
 
   // Initialize the map once.
   useEffect(() => {
@@ -121,9 +166,10 @@ export function MapPicker({ onSelect, value, className }: MapPickerProps) {
       e.preventDefault();
       if (!search.trim()) return;
       setLoading(true);
+      setResults([]);
       try {
         const res = await fetch(
-          `https://nominatim.openstreetmap.org/search?format=json&limit=6&q=${encodeURIComponent(
+          `https://nominatim.openstreetmap.org/search?format=json&limit=8&q=${encodeURIComponent(
             search
           )}`,
           { headers: { "User-Agent": NOMINATIM_UA } }
@@ -148,8 +194,7 @@ export function MapPicker({ onSelect, value, className }: MapPickerProps) {
   const pickResult = useCallback(
     (r: { lat: number; lng: number; display_name: string }) => {
       setResults([]);
-      mapRefInst.current?.setView([r.lat, r.lng], 15);
-      markerRef.current?.setLatLng([r.lat, r.lng]);
+      setPosition(r.lat, r.lng, 15);
       onSelect({
         lat: r.lat,
         lng: r.lng,
@@ -157,14 +202,17 @@ export function MapPicker({ onSelect, value, className }: MapPickerProps) {
         shortAddress: r.display_name,
       });
     },
-    [onSelect]
+    [setPosition, onSelect]
   );
 
   return (
     <section className={className}>
-      <h2 className="font-display text-2xl font-semibold mb-2">2. Pick your delivery location</h2>
+      <h2 className="font-display text-2xl font-semibold mb-2">
+        2. Pick your delivery location
+      </h2>
       <p className="text-sm text-ink/60 mb-4">
-        Drag the pin (or tap the map) to your exact spot — the address fills in automatically.
+        Drag the pin (or tap the map) to your exact spot — the address fills in
+        automatically.
       </p>
       <div className="rounded-2xl border border-ink/10 bg-paper overflow-hidden shadow-sm">
         <div className="relative h-[360px]">
@@ -185,6 +233,38 @@ export function MapPicker({ onSelect, value, className }: MapPickerProps) {
                 {loading ? "…" : "Find"}
               </button>
             </form>
+            <button
+              onClick={handleUseMyLocation}
+              disabled={geolocating}
+              className="w-full h-9 rounded-xl border border-ink/15 bg-paper px-3 py-2 text-xs font-semibold text-ink transition disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 hover:border-ink/40"
+            >
+              {geolocating ? (
+                <>
+                  <span className="h-3 w-3 rounded-full border-2 border-ink/40 border-t-paper animate-spin" />
+                  <span className="text-ink/60">Locating…</span>
+                </>
+              ) : (
+                <>
+                  <svg
+                    className="h-3 w-3"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth="2"
+                      d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"
+                    />
+                  </svg>
+                  <span>Use my current location</span>
+                </>
+              )}
+            </button>
+            {geoError && (
+              <p className="text-xs text-ember mt-1">{geoError}</p>
+            )}
             {results.length > 0 && (
               <div className="bg-paper rounded-xl border border-ink/10 shadow-lg max-h-48 overflow-y-auto z-[40]">
                 {results.map((r, i) => (
