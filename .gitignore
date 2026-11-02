@@ -1,0 +1,13 @@
+node_modules/
+.next/
+out/
+build/
+*.log
+npm-debug.log*
+tsconfig.tsbuildinfo
+next-env.d.ts
+
+# Local SQLite database (created and seeded automatically on first request)
+dev.sqlite
+dev.sqlite-shm
+dev.sqlite-wal
