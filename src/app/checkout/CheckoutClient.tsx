@@ -9,10 +9,13 @@ import dynamic from "next/dynamic";
 import { cartActions, useCart } from "@/lib/cart-store";
 import { deliveryFeeFor, formatPKR } from "@/lib/format";
 import { AREAS, SHOP } from "@/lib/shop";
-import { type MapLocation } from "@/components/MapPicker";
+import { type MapLocation } from "@/components/GoogleMapsMapPicker";
 
 const MapPicker = dynamic(
-  () => import("@/components/MapPicker").then((mod) => mod.MapPicker),
+  () =>
+    import("@/components/GoogleMapsMapPicker").then(
+      (mod) => mod.GoogleMapsMapPicker
+    ),
   {
     ssr: false,
     loading: () => (
