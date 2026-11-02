@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { cartActions } from "@/lib/cart-store";
 import { formatPKR } from "@/lib/format";
+import { playCartSound } from "@/lib/cart-sound";
 import { categoryLabel } from "@/lib/shop";
 import type { Product } from "@/lib/types";
 import { Img, SpiceMeter, Stars } from "./ui";
@@ -16,8 +17,8 @@ export function ProductCard({ product, priority = false }: { product: Product; p
 
   function quickAdd() {
     cartActions.add(product, { openDrawer: false });
+    playCartSound();
     setAdded(true);
-    cartActions.openDrawer();
     setTimeout(() => setAdded(false), 1400);
   }
 

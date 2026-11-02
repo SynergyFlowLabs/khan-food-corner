@@ -5,6 +5,7 @@ import { useState } from "react";
 import { Stepper } from "@/components/CartDrawer";
 import { cartActions } from "@/lib/cart-store";
 import { formatPKR } from "@/lib/format";
+import { playCartSound } from "@/lib/cart-sound";
 import type { Product } from "@/lib/types";
 
 export function PurchasePanel({ product }: { product: Product }) {
@@ -18,7 +19,8 @@ export function PurchasePanel({ product }: { product: Product }) {
   const compare = !hasVariants && product.comparePrice ? product.comparePrice : null;
 
   function add() {
-    cartActions.add(product, { variant, qty });
+    cartActions.add(product, { variant, qty, openDrawer: false });
+    playCartSound();
     setAdded(true);
     setTimeout(() => setAdded(false), 1500);
   }
