@@ -46,6 +46,7 @@ export function GoogleMapsMapPicker({
   const [debounceTimer, setDebounceTimer] = useState<
     ReturnType<typeof setTimeout> | null
   >(null);
+  const [mapInitError, setMapInitError] = useState<string | null>(null);
 
   // Load Google Maps JavaScript API
   useEffect(() => {
@@ -68,7 +69,7 @@ export function GoogleMapsMapPicker({
       })
       .catch((err: any) => {
         setMapsError("Failed to load Google Maps. Check your API key.");
-        console.error(err);
+        console.error("Google Maps load error:", err);
       });
     return () => {
       // Loader doesn't expose an unload; safe to ignore.
@@ -79,56 +80,73 @@ export function GoogleMapsMapPicker({
   useEffect(() => {
     if (!mapsLoaded || !mapRef.current || mapRefInst.current) return;
 
-    const map = new window.google.maps.Map(mapRef.current, {
-      center: value
-        ? { lat: value.lat, lng: value.lng }
-        : CENTER,
-      zoom: 13,
-      mapTypeControl: false,
-      streetViewControl: false,
-      fullscreenControl: false,
-    });
-    mapRefInst.current = map;
-    geocoderRef.current = new window.google.maps.Geocoder();
+    try {
+      const map = new window.google.maps.Map(mapRef.current, {
+        center: value
+          ? { lat: value.lat, lng: value.lng }
+          : CENTER,
+        zoom: 13,
+        mapTypeControl: false,
+        streetViewControl: false,
+        fullscreenControl: false,
+      });
+      mapRefInst.current = map;
+      geocoderRef.current = new window.google.maps.Geocoder();
 
-    const marker = new window.google.maps.Marker({
-      position: value
-        ? { lat: value.lat, lng: value.lng }
-        : CENTER,
-      map,
-      draggable: true,
-      animation: window.google.maps.Animation.DROP,
-    });
-    markerRef.current = marker;
+      const marker = new window.google.maps.Marker({
+        position: value
+          ? { lat: value.lat, lng: value.lng }
+          : CENTER,
+        map,
+        draggable: true,
+        animation: window.google.maps.Animation.DROP,
+      });
+      markerRef.current = marker;
 
-    const dragListener = marker.addListener("dragend", async () => {
-      const pos = marker.getPosition();
-      if (!pos) return;
-      await reverseGeocode(pos.lat(), pos.lng());
-    });
-    const clickListener = map.addListener("click", async (e: any) => {
-      const lat = e.latLng.lat();
-      const lng = e.latLng.lng();
-      marker.setPosition({ lat, lng });
-      map.setCenter({ lat, lng });
-      await reverseGeocode(lat, lng);
-    });
+      const dragListener = marker.addListener("dragend", async () => {
+        const pos = marker.getPosition();
+        if (!pos) return;
+        await reverseGeocode(pos.lat(), pos.lng());
+      });
+      const clickListener = map.addListener("click", async (e: any) => {
+        const lat = e.latLng.lat();
+        const lng = e.latLng.lng();
+        marker.setPosition({ lat, lng });
+        map.setCenter({ lat, lng });
+        await reverseGeocode(lat, lng);
+      });
 
-    return () => {
-      google.maps.event.removeListener(dragListener);
-      google.maps.event.removeListener(clickListener);
-      mapRefInst.current = null;
-      markerRef.current = null;
-      geocoderRef.current = null;
-    };
+      setMapInitError(null);
+
+      return () => {
+        try {
+          google.maps.event.removeListener(dragListener);
+          google.maps.event.removeListener(clickListener);
+        } catch {
+          // ignore
+        }
+        mapRefInst.current = null;
+        markerRef.current = null;
+        geocoderRef.current = null;
+      };
+    } catch (err: any) {
+      setMapInitError(
+        err?.message || "Failed to initialize Google Maps. Check your API key and billing."
+      );
+      console.error("Google Maps init error:", err);
+    }
   }, [mapsLoaded, value]);
 
   // Sync marker/map when external value changes.
   useEffect(() => {
     if (!mapRefInst.current || !value) return;
-    mapRefInst.current.setCenter({ lat: value.lat, lng: value.lng });
-    mapRefInst.current.setZoom(14);
-    markerRef.current?.setPosition({ lat: value.lat, lng: value.lng });
+    try {
+      mapRefInst.current.setCenter({ lat: value.lat, lng: value.lng });
+      mapRefInst.current.setZoom(14);
+      markerRef.current?.setPosition({ lat: value.lat, lng: value.lng });
+    } catch {
+      // ignore
+    }
   }, [value]);
 
   const reverseGeocode = useCallback(
@@ -250,9 +268,13 @@ export function GoogleMapsMapPicker({
       distKm?: number;
     }) => {
       setResults([]);
-      mapRefInst.current?.setCenter({ lat: r.lat, lng: r.lng });
-      mapRefInst.current?.setZoom(16);
-      markerRef.current?.setPosition({ lat: r.lat, lng: r.lng });
+      try {
+        mapRefInst.current?.setCenter({ lat: r.lat, lng: r.lng });
+        mapRefInst.current?.setZoom(16);
+        markerRef.current?.setPosition({ lat: r.lat, lng: r.lng });
+      } catch {
+        // ignore
+      }
 
       // Get full formatted address via Geocoder for the selected place.
       if (geocoderRef.current) {
@@ -291,9 +313,13 @@ export function GoogleMapsMapPicker({
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
         const { latitude, longitude } = pos.coords;
-        mapRefInst.current?.setCenter({ lat: latitude, lng: longitude });
-        mapRefInst.current?.setZoom(16);
-        markerRef.current?.setPosition({ lat: latitude, lng: longitude });
+        try {
+          mapRefInst.current?.setCenter({ lat: latitude, lng: longitude });
+          mapRefInst.current?.setZoom(16);
+          markerRef.current?.setPosition({ lat: latitude, lng: longitude });
+        } catch {
+          // ignore
+        }
         setGeolocating(false);
         await reverseGeocode(latitude, longitude);
       },
@@ -317,20 +343,94 @@ export function GoogleMapsMapPicker({
     );
   }, [reverseGeocode]);
 
-  // Maps not configured / error state.
-  if (mapsError) {
+  // Fallback manual address input when maps are unavailable
+  const [manualAddress, setManualAddress] = useState("");
+
+  const handleManualSubmit = useCallback(
+    (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!manualAddress.trim()) return;
+      // Geocode manually via geocoder if available, otherwise just use the text
+      if (geocoderRef.current) {
+        geocoderRef.current
+          .geocode({ address: manualAddress })
+          .then((r: any) => r[0])
+          .then((res: any) => {
+            if (res?.geometry?.location) {
+              const loc = res.geometry.location;
+              onSelect({
+                lat: loc.lat(),
+                lng: loc.lng(),
+                address: res.formatted_address,
+                shortAddress: extractShortAddress(res),
+              });
+            } else {
+              onSelect({
+                lat: 0,
+                lng: 0,
+                address: manualAddress,
+                shortAddress: manualAddress,
+              });
+            }
+          })
+          .catch(() => {
+            onSelect({
+              lat: 0,
+              lng: 0,
+              address: manualAddress,
+              shortAddress: manualAddress,
+            });
+          });
+      } else {
+        onSelect({
+          lat: 0,
+          lng: 0,
+          address: manualAddress,
+          shortAddress: manualAddress,
+        });
+      }
+    },
+    [manualAddress, geocoderRef.current, onSelect, extractShortAddress]
+  );
+
+  // Maps not configured / error state — show fallback input
+  if (mapsError || mapInitError) {
     return (
       <section className={className}>
         <h2 className="font-display text-2xl font-semibold mb-2">
           2. Pick your delivery location
         </h2>
-        <div className="rounded-2xl border border-ember/10 bg-ember/5 p-6 text-center">
-          <p className="text-sm font-semibold text-ember">
-            {mapsError}
+        <div className="rounded-2xl border border-ember/10 bg-ember/5 p-6">
+          {mapsError && (
+            <p className="text-sm font-semibold text-ember mb-4">
+              {mapsError}
+            </p>
+          )}
+          {mapInitError && (
+            <p className="text-sm font-semibold text-ember mb-4">
+              {mapInitError}
+            </p>
+          )}
+          <p className="text-xs text-ink/50 mb-4">
+            Google Maps is unavailable. Enter your delivery address manually:
           </p>
-          <p className="mt-2 text-xs text-ink/50">
-            Add your Google Maps API key to .env as NEXT_PUBLIC_GOOGLE_MAPS_API_KEY
-            and restart the dev server.
+          <form onSubmit={handleManualSubmit} className="flex gap-2">
+            <input
+              className="h-11 flex-1 rounded-xl border-0 bg-paper px-4 py-3 text-sm outline-none ring-1 ring-ink/15 focus:ring-2 focus:ring-ember"
+              value={manualAddress}
+              onChange={(e) => setManualAddress(e.target.value)}
+              placeholder="House / street / area / landmark…"
+            />
+            <button
+              type="submit"
+              className="h-11 px-5 rounded-xl bg-ember text-xs font-bold text-paper"
+            >
+              Use this address
+            </button>
+          </form>
+          <p className="mt-3 text-xs text-ink/40">
+            Tip: In Google Cloud Console, enable Maps JavaScript API, Places API,
+            and Geocoding API for your key, and enable billing on the project.
           </p>
         </div>
       </section>
