@@ -14,6 +14,7 @@ L.Icon.Default.mergeOptions({
 
 const CENTER: [number, number] = [33.57, 73.06]; // Rawalpindi / Islamabad
 const NOMINATIM_UA = "KhanFoodCorner/1.0";
+const DEBOUNCE_MS = 300;
 
 export type MapLocation = {
   lat: number;
@@ -28,17 +29,39 @@ interface MapPickerProps {
   className?: string;
 }
 
+/** Haversine distance in km between two lat/lng points. */
+function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number) {
+  const R = 6371;
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
 export function MapPicker({ onSelect, value, className }: MapPickerProps) {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapRefInst = useRef<L.Map | null>(null);
   const markerRef = useRef<L.Marker | null>(null);
+  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<
-    Array<{ lat: number; lng: number; display_name: string }>
+    Array<{ lat: number; lng: number; display_name: string; distKm?: number }>
   >([]);
   const [loading, setLoading] = useState(false);
   const [geolocating, setGeolocating] = useState(false);
   const [geoError, setGeoError] = useState<string | null>(null);
+
+  // Reference point used to sort results nearest-first.
+  // Defaults to Rawalpindi centre; updated by geolocation or picking a result.
+  const [refPoint, setRefPoint] = useState<{ lat: number; lng: number }>({
+    lat: CENTER[0],
+    lng: CENTER[1],
+  });
 
   const reverseGeocode = useCallback(
     async (lat: number, lng: number) => {
@@ -50,7 +73,6 @@ export function MapPicker({ onSelect, value, className }: MapPickerProps) {
         const data = await res.json();
         const full = data.display_name || `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
         const parts = data.address || {};
-        // Build a concise street-level address for the textarea.
         const short =
           [parts.house_number, parts.road, parts.suburb, parts.city].filter(
             Boolean
@@ -77,6 +99,7 @@ export function MapPicker({ onSelect, value, className }: MapPickerProps) {
     async (lat: number, lng: number, zoom = 15) => {
       mapRefInst.current?.setView([lat, lng] as [number, number], zoom);
       markerRef.current?.setLatLng([lat, lng] as [number, number]);
+      setRefPoint({ lat, lng });
       await reverseGeocode(lat, lng);
     },
     [reverseGeocode]
@@ -136,12 +159,14 @@ export function MapPicker({ onSelect, value, className }: MapPickerProps) {
 
     const onMove = async () => {
       const p = marker.getLatLng();
+      setRefPoint({ lat: p.lat, lng: p.lng });
       await reverseGeocode(p.lat, p.lng);
     };
 
     marker.on("dragend", onMove);
     map.on("click", async (e: L.LeafletMouseEvent) => {
       marker.setLatLng(e.latlng);
+      setRefPoint({ lat: e.latlng.lat, lng: e.latlng.lng });
       await reverseGeocode(e.latlng.lat, e.latlng.lng);
     });
 
@@ -159,41 +184,69 @@ export function MapPicker({ onSelect, value, className }: MapPickerProps) {
     if (!mapRefInst.current || !value) return;
     mapRefInst.current.setView([value.lat, value.lng] as [number, number], 14);
     markerRef.current?.setLatLng([value.lat, value.lng] as [number, number]);
+    setRefPoint({ lat: value.lat, lng: value.lng });
   }, [value]);
 
-  const handleSearch = useCallback(
-    async (e: React.FormEvent) => {
-      e.preventDefault();
-      if (!search.trim()) return;
+  // Debounced real-time search: fetch + sort nearest-first as the user types.
+  const runSearch = useCallback(
+    async (q: string) => {
+      if (!q.trim()) {
+        setResults([]);
+        return;
+      }
       setLoading(true);
-      setResults([]);
       try {
         const res = await fetch(
-          `https://nominatim.openstreetmap.org/search?format=json&limit=8&q=${encodeURIComponent(
-            search
+          `https://nominatim.openstreetmap.org/search?format=json&limit=10&q=${encodeURIComponent(
+            q
           )}`,
           { headers: { "User-Agent": NOMINATIM_UA } }
         );
         const data = await res.json();
-        setResults(
-          data.map((d: any) => ({
-            lat: parseFloat(d.lat),
-            lng: parseFloat(d.lon),
-            display_name: d.display_name,
-          }))
+        type SearchResult = {
+          lat: string;
+          lon: string;
+          display_name: string;
+        };
+        const withDist = (data as SearchResult[]).map((d) => ({
+          lat: parseFloat(d.lat),
+          lng: parseFloat(d.lon),
+          display_name: d.display_name,
+          distKm: haversineKm(refPoint.lat, refPoint.lng, parseFloat(d.lat), parseFloat(d.lon)),
+        }));
+        // Sort nearest first.
+        withDist.sort(
+          (a, b) => (a.distKm ?? 0) - (b.distKm ?? 0)
         );
+        setResults(withDist);
       } catch {
         setResults([]);
       } finally {
         setLoading(false);
       }
     },
-    [search]
+    [refPoint]
   );
 
-  const pickResult = useCallback(
-    (r: { lat: number; lng: number; display_name: string }) => {
+  useEffect(() => {
+    if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    if (!search.trim()) {
       setResults([]);
+      setLoading(false);
+      return;
+    }
+    debounceTimer.current = setTimeout(() => {
+      runSearch(search);
+    }, DEBOUNCE_MS);
+    return () => {
+      if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    };
+  }, [search, runSearch]);
+
+  const pickResult = useCallback(
+    (r: { lat: number; lng: number; display_name: string; distKm?: number }) => {
+      setResults([]);
+      setRefPoint({ lat: r.lat, lng: r.lng });
       setPosition(r.lat, r.lng, 15);
       onSelect({
         lat: r.lat,
@@ -217,22 +270,16 @@ export function MapPicker({ onSelect, value, className }: MapPickerProps) {
 
       {/* Controls above the map — clearly visible, not overlapping the map */}
       <div className="mb-3 flex flex-col sm:flex-row sm:items-end gap-3">
-        <div className="flex-1">
-          <form onSubmit={handleSearch} className="flex gap-2">
-            <input
-              className="h-11 w-full rounded-xl border-0 bg-paper px-4 py-3 text-sm outline-none ring-1 ring-ink/15 focus:ring-2 focus:ring-ember"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search area / landmark…"
-            />
-            <button
-              type="submit"
-              disabled={loading}
-              className="h-11 px-5 rounded-xl bg-ember text-xs font-bold text-paper disabled:opacity-60"
-            >
-              {loading ? "…" : "Find"}
-            </button>
-          </form>
+        <div className="flex-1 relative">
+          <input
+            className="h-11 w-full rounded-xl border-0 bg-paper px-4 py-3 text-sm outline-none ring-1 ring-ink/15 focus:ring-2 focus:ring-ember"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search area / landmark…"
+          />
+          {loading && (
+            <span className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 rounded-full border-2 border-ink/40 border-t-paper animate-spin" />
+          )}
           {results.length > 0 && (
             <div className="mt-1 bg-paper rounded-xl border border-ink/10 shadow-lg max-h-48 overflow-y-auto z-20">
               {results.map((r, i) => (
@@ -241,12 +288,28 @@ export function MapPicker({ onSelect, value, className }: MapPickerProps) {
                   onClick={() => pickResult(r)}
                   className="w-full text-left px-4 py-2.5 text-sm text-ink hover:bg-ember/10 transition border-b border-ink/5 last:border-b-0"
                 >
-                  {r.display_name}
+                  <div className="font-medium">{r.display_name}</div>
+                  {r.distKm != null && (
+                    <span className="text-xs text-ink/40">
+                      {r.distKm < 1 ? `${Math.round(r.distKm * 1000)} m` : `${r.distKm.toFixed(1)} km`} away
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
           )}
         </div>
+        <button
+          onClick={() => {
+            if (!search.trim()) return;
+            if (debounceTimer.current) clearTimeout(debounceTimer.current);
+            runSearch(search);
+          }}
+          disabled={loading}
+          className="shrink-0 h-11 px-5 rounded-xl bg-ember text-xs font-bold text-paper disabled:opacity-60"
+        >
+          {loading ? "…" : "Find"}
+        </button>
         <button
           onClick={handleUseMyLocation}
           disabled={geolocating}
